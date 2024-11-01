@@ -2,8 +2,8 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.util.LinkedHashSet;
-import java.util.Set;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 public class UniqueReferencesApp {
 
@@ -37,11 +37,11 @@ public class UniqueReferencesApp {
                 String inputText = inputArea.getText();
 
                 // Process the input text to extract and store unique references
-                Set<String> uniqueReferences = extractUniqueReferences(inputText);
+                Map<String, String> uniqueReferences = extractUniqueReferences(inputText);
 
                 // Display unique references in the output area
                 StringBuilder outputText = new StringBuilder();
-                for (String ref : uniqueReferences) {
+                for (String ref : uniqueReferences.values()) {
                     outputText.append(ref).append("\n\n");
                 }
 
@@ -66,23 +66,32 @@ public class UniqueReferencesApp {
         frame.setVisible(true);
     }
 
-    private static Set<String> extractUniqueReferences(String inputText) {
-        Set<String> uniqueReferences = new LinkedHashSet<>();
+    private static Map<String, String> extractUniqueReferences(String inputText) {
+        Map<String, String> uniqueReferences = new LinkedHashMap<>();
         StringBuilder currentReference = new StringBuilder();
         boolean inReference = false;
+        String currentKey = null;
 
         for (String line : inputText.split("\\n")) {
-            // Trim only trailing whitespace to maintain original formatting within the references
-            line = line.replaceFirst("\\s+$", "");
+            line = line.trim();
 
             if (line.startsWith("@")) {
                 // Start of a new reference block
-                if (inReference) {
-                    // Store the previous reference block exactly as it appears
-                    uniqueReferences.add(currentReference.toString().trim());
+                if (inReference && currentKey != null) {
+                    // Store the previous reference block if key is unique
+                    uniqueReferences.putIfAbsent(currentKey, currentReference.toString().trim());
                     currentReference.setLength(0); // Clear the current reference
                 }
                 inReference = true;
+
+                // Extract the key from the line (e.g., @article{key, ...)
+                int startIndex = line.indexOf("{") + 1;
+                int endIndex = line.indexOf(",");
+                if (startIndex > 0 && endIndex > startIndex) {
+                    currentKey = line.substring(startIndex, endIndex).trim();
+                } else {
+                    currentKey = null;
+                }
             }
 
             // Accumulate lines in the current reference block
@@ -92,8 +101,8 @@ public class UniqueReferencesApp {
         }
 
         // Add the last reference block if any
-        if (inReference && currentReference.length() > 0) {
-            uniqueReferences.add(currentReference.toString().trim());
+        if (inReference && currentKey != null) {
+            uniqueReferences.putIfAbsent(currentKey, currentReference.toString().trim());
         }
 
         return uniqueReferences;
