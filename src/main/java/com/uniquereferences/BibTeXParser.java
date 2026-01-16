@@ -158,4 +158,35 @@ public final class BibTeXParser {
     public record Entry(String type, String key, String raw) {}
 
     public record ParseResult(List<Entry> entries, List<String> errors) {}
+
+    /**
+     * Extracts a specific field value from a raw BibTeX entry.
+     * Case-insensitive field name matching.
+     * Handles {...} and "..." delimiters.
+     * Returns null if field not found.
+     */
+    public static String extractField(String rawEntry, String fieldName) {
+        if (rawEntry == null || fieldName == null) return null;
+
+        // Regex to find field = {value} or field = "value" or field = 123
+        // Captures: 1=braced, 2=quoted, 3=bare
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+            fieldName + "\\s*=\\s*(?:\\{([^{}]*(?:\\{[^{}]*\\}[^{}]*)*)\\}|\"([^\"]*)\"|([\\w-]+))",
+            java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.DOTALL
+        );
+
+        java.util.regex.Matcher m = p.matcher(rawEntry);
+        if (m.find()) {
+            String val = m.group(1); // braced
+            if (val == null) val = m.group(2); // quoted
+            if (val == null) val = m.group(3); // bare
+
+            if (val != null) {
+                // Remove whitespaces and newlines within the value if needed,
+                // but usually we just trim the result.
+                return val.replaceAll("\\s+", " ").trim();
+            }
+        }
+        return null;
+    }
 }

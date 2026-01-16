@@ -53,6 +53,19 @@ public class AllTests {
             allPassed = false;
         }
 
+        System.out.println();
+
+        // Run Bib integrity regression tests
+        System.out.println("┌──────────────────────────────────────────────────────────┐");
+        System.out.println("│ Running BibIntegrityRegressionTest...                    │");
+        System.out.println("└──────────────────────────────────────────────────────────┘");
+        try {
+            BibIntegrityRegressionTest.main(new String[]{});
+        } catch (Exception e) {
+            System.out.println("BibIntegrityRegressionTest FAILED: " + e.getMessage());
+            allPassed = false;
+        }
+
         // Final summary
         System.out.println("\n╔══════════════════════════════════════════════════════════╗");
         if (allPassed) {

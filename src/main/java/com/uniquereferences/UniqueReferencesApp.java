@@ -48,6 +48,7 @@ public class UniqueReferencesApp {
 
     // Preferences keys
     private static final String PREF_SORT_BY_KEY = "sortByKey";
+    private static final String PREF_SMART_DEDUP = "smartDedup";
     private static final String PREF_RECENT_FILES = "recentFiles";
     private static final String PREF_LAST_DIR = "lastDirectory";
     private static final int MAX_RECENT_FILES = 5;
@@ -60,6 +61,7 @@ public class UniqueReferencesApp {
     private JLabel statusLabel;
     private JProgressBar progressBar;
     private JCheckBox sortCheckBox;
+    private JCheckBox smartDedupCheckBox;
     private JTextField searchField;
 
     private JButton uploadButton;
@@ -268,10 +270,11 @@ public class UniqueReferencesApp {
      * Creates the button panel with action buttons.
      */
     private JPanel createButtonPanel() {
-        JPanel panel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 10));
 
         uploadButton = new JButton("Upload File");
         processButton = new JButton("Process");
+        verifyButton = new JButton("Verify & Correct");
         copyButton = new JButton("Copy Output");
         saveButton = new JButton("Save Output");
         clearButton = new JButton("Clear");
@@ -279,10 +282,16 @@ public class UniqueReferencesApp {
         sortCheckBox = new JCheckBox("Sort by Key");
         sortCheckBox.setSelected(prefs.getBoolean(PREF_SORT_BY_KEY, false));
 
+        smartDedupCheckBox = new JCheckBox("Smart Dedupe");
+        smartDedupCheckBox.setToolTipText("Remove duplicates based on similar Title and Author (ignoring keys)");
+        smartDedupCheckBox.setSelected(prefs.getBoolean(PREF_SMART_DEDUP, false));
+
         // Set reasonable sizes
         Dimension btnSize = new Dimension(110, 30);
         uploadButton.setPreferredSize(btnSize);
         processButton.setPreferredSize(btnSize);
+        verifyButton.setPreferredSize(new Dimension(120, 30));
+        verifyButton.setToolTipText("Verify references online and correct/complete missing fields");
         copyButton.setPreferredSize(btnSize);
         saveButton.setPreferredSize(btnSize);
         clearButton.setPreferredSize(new Dimension(80, 30));
@@ -290,13 +299,16 @@ public class UniqueReferencesApp {
         // Add action listeners
         processButton.addActionListener(e -> processReferencesAsync());
         uploadButton.addActionListener(e -> uploadFile());
+        verifyButton.addActionListener(e -> verifyReferencesAsync());
         copyButton.addActionListener(e -> copyToClipboard());
         saveButton.addActionListener(e -> saveOutputToFile());
         clearButton.addActionListener(e -> clearAll());
 
         panel.add(uploadButton);
         panel.add(sortCheckBox);
+        panel.add(smartDedupCheckBox);
         panel.add(processButton);
+        panel.add(verifyButton);
         panel.add(copyButton);
         panel.add(saveButton);
         panel.add(clearButton);
@@ -523,6 +535,7 @@ public class UniqueReferencesApp {
         copyButton.setEnabled(!busy);
         saveButton.setEnabled(!busy);
         sortCheckBox.setEnabled(!busy);
+        smartDedupCheckBox.setEnabled(!busy);
         inputArea.setEditable(!busy);
 
         progressBar.setVisible(busy);
@@ -553,7 +566,7 @@ public class UniqueReferencesApp {
         SwingWorker<BibTeXDeduplicator.Result, Void> worker = new SwingWorker<>() {
             @Override
             protected BibTeXDeduplicator.Result doInBackground() {
-                return BibTeXDeduplicator.deduplicate(inputText, sortCheckBox.isSelected());
+                return BibTeXDeduplicator.deduplicate(inputText, sortCheckBox.isSelected(), smartDedupCheckBox.isSelected());
             }
 
             @Override
@@ -602,6 +615,7 @@ public class UniqueReferencesApp {
 
     /**
      * Verifies and corrects references using online sources (CrossRef API).
+     * This also deduplicates the references first.
      */
     private void verifyReferencesAsync() {
         if (currentWorker != null && !currentWorker.isDone()) {
@@ -619,7 +633,7 @@ public class UniqueReferencesApp {
         }
 
         // First deduplicate
-        BibTeXDeduplicator.Result dedupResult = BibTeXDeduplicator.deduplicate(inputText, sortCheckBox.isSelected());
+        BibTeXDeduplicator.Result dedupResult = BibTeXDeduplicator.deduplicate(inputText, sortCheckBox.isSelected(), smartDedupCheckBox.isSelected());
 
         if (dedupResult.totalEntries() == 0) {
             setStatus("No reference entries found to verify.", true);
@@ -627,14 +641,20 @@ public class UniqueReferencesApp {
         }
 
         int totalEntries = dedupResult.uniqueCount();
+        int duplicatesRemoved = dedupResult.duplicateCount();
 
         // Confirm with user since this makes network requests
+        String confirmMessage = "This will:\n" +
+                "• Remove " + duplicatesRemoved + " duplicate(s)\n" +
+                "• Verify " + totalEntries + " unique reference(s) using CrossRef API\n" +
+                "• Complete missing fields (author, title, journal, year, etc.)\n\n" +
+                "This requires an internet connection and may take some time.\n\n" +
+                "Continue?";
+
         int confirm = JOptionPane.showConfirmDialog(
                 frame,
-                "This will verify " + totalEntries + " unique reference(s) using CrossRef API.\n" +
-                        "This requires an internet connection and may take some time.\n\n" +
-                        "Continue?",
-                "Verify References",
+                confirmMessage,
+                "Verify & Correct References",
                 JOptionPane.YES_NO_OPTION,
                 JOptionPane.QUESTION_MESSAGE
         );
@@ -661,7 +681,8 @@ public class UniqueReferencesApp {
                     if (isCancelled()) return null;
 
                     current++;
-                    publish(new VerificationProgress(current, totalEntries, "Checking: " + extractKeyFromEntry(entry)));
+                    String key = extractKeyFromEntry(entry);
+                    publish(new VerificationProgress(current, totalEntries, key));
 
                     ReferenceVerifier.VerificationResult result = verifier.verify(entry);
 
@@ -677,14 +698,14 @@ public class UniqueReferencesApp {
 
                     // Small delay to be respectful to the API
                     try {
-                        Thread.sleep(100);
+                        Thread.sleep(150);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         break;
                     }
                 }
 
-                return new VerificationSummary(correctedEntries, verified, corrected, notFound, errors, skipped);
+                return new VerificationSummary(correctedEntries, verified, corrected, notFound, errors, skipped, duplicatesRemoved);
             }
 
             @Override
@@ -704,13 +725,16 @@ public class UniqueReferencesApp {
                     if (summary == null) return; // Cancelled
 
                     StringBuilder out = new StringBuilder();
-                    out.append("% Verification Summary:\n");
-                    out.append("% - Verified (correct): ").append(summary.verified).append('\n');
-                    out.append("% - Corrected/completed: ").append(summary.corrected).append('\n');
-                    out.append("% - Not found online: ").append(summary.notFound).append('\n');
-                    out.append("% - Errors: ").append(summary.errors).append('\n');
-                    out.append("% - Skipped (no DOI/title): ").append(summary.skipped).append('\n');
-                    out.append("% ").append("=".repeat(50)).append("\n\n");
+                    out.append("% ═══════════════════════════════════════════════════════\n");
+                    out.append("% VERIFICATION & DEDUPLICATION SUMMARY\n");
+                    out.append("% ═══════════════════════════════════════════════════════\n");
+                    out.append("% Duplicates removed: ").append(summary.duplicatesRemoved).append('\n');
+                    out.append("% Verified (already correct): ").append(summary.verified).append('\n');
+                    out.append("% Corrected/completed: ").append(summary.corrected).append('\n');
+                    out.append("% Not found online: ").append(summary.notFound).append('\n');
+                    out.append("% Errors during lookup: ").append(summary.errors).append('\n');
+                    out.append("% Skipped (no DOI/title): ").append(summary.skipped).append('\n');
+                    out.append("% ═══════════════════════════════════════════════════════\n\n");
 
                     for (String entry : summary.entries) {
                         out.append(entry).append("\n\n");
@@ -721,8 +745,8 @@ public class UniqueReferencesApp {
                     outputArea.setCaretPosition(0);
                     searchField.setText("");
 
-                    String statusMsg = String.format("Done. Verified: %d, Corrected: %d, Not found: %d",
-                            summary.verified, summary.corrected, summary.notFound);
+                    String statusMsg = String.format("Done. Duplicates removed: %d, Verified: %d, Corrected: %d, Not found: %d",
+                            summary.duplicatesRemoved, summary.verified, summary.corrected, summary.notFound);
                     setStatus(statusMsg, false);
 
                 } catch (Exception ex) {
@@ -752,7 +776,7 @@ public class UniqueReferencesApp {
 
     // Helper records for verification
     private record VerificationProgress(int current, int total, String message) {}
-    private record VerificationSummary(java.util.List<String> entries, int verified, int corrected, int notFound, int errors, int skipped) {}
+    private record VerificationSummary(java.util.List<String> entries, int verified, int corrected, int notFound, int errors, int skipped, int duplicatesRemoved) {}
 
     /**
      * Opens a file chooser to upload a .bib file.
@@ -996,6 +1020,7 @@ public class UniqueReferencesApp {
     private void savePreferences() {
         // Save sort preference
         prefs.putBoolean(PREF_SORT_BY_KEY, sortCheckBox.isSelected());
+        prefs.putBoolean(PREF_SMART_DEDUP, smartDedupCheckBox.isSelected());
 
         // Save recent files
         StringBuilder sb = new StringBuilder();

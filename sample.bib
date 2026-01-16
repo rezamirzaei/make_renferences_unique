@@ -1,6 +1,13 @@
 % Sample BibTeX file for testing Unique LaTeX References
-% This file contains duplicate entries to demonstrate deduplication
+% This file contains:
+% - Duplicate entries (to test deduplication)
+% - Incomplete entries (to test completion via CrossRef)
+% - Entries with DOI (for accurate lookup)
+% - Entries without DOI (for title-based search)
 
+% ═══════════════════════════════════════════════════════════
+% COMPLETE REFERENCE WITH DOI (should be verified as correct)
+% ═══════════════════════════════════════════════════════════
 @article{smith2020,
   author = {John Smith and Jane Doe},
   title = {A Great Paper on Machine Learning},
@@ -11,6 +18,9 @@
   doi = {10.1038/s41586-020-12345-6}
 }
 
+% ═══════════════════════════════════════════════════════════
+% DUPLICATE OF ABOVE (should be removed)
+% ═══════════════════════════════════════════════════════════
 @article{smith2020,
   author = {J. Smith},
   title = {Duplicate Entry - Should Be Removed},
@@ -18,6 +28,26 @@
   year = {2020}
 }
 
+% ═══════════════════════════════════════════════════════════
+% REAL PAPER - INCOMPLETE (missing author, journal, year)
+% CrossRef should complete this using DOI
+% ═══════════════════════════════════════════════════════════
+@article{crispr2013,
+  doi = {10.1126/science.1231143},
+  title = {Multiplex Genome Engineering}
+}
+
+% ═══════════════════════════════════════════════════════════
+% REAL PAPER - ONLY DOI (completely incomplete)
+% CrossRef should fill in all fields
+% ═══════════════════════════════════════════════════════════
+@article{attention2017,
+  doi = {10.48550/arXiv.1706.03762}
+}
+
+% ═══════════════════════════════════════════════════════════
+% BOOK - COMPLETE
+% ═══════════════════════════════════════════════════════════
 @book{knuth1997,
   author = {Donald E. Knuth},
   title = {The Art of Computer Programming, Volume 1},
@@ -26,29 +56,45 @@
   edition = {3rd}
 }
 
-@inproceedings{conference2021,
-  author = {Alice Johnson and Bob Williams},
-  title = {Deep Learning for Natural Language Processing},
-  booktitle = {Proceedings of the International Conference on AI},
-  year = {2021},
-  pages = {50-65}
-}
-
-@article{doi_example,
-  doi = {10.1038/nature12373},
-  title = {This entry has a DOI that can be verified online}
-}
-
-@misc{incomplete,
-  title = {An incomplete reference that may be corrected online}
-}
-
+% ═══════════════════════════════════════════════════════════
+% DUPLICATE BOOK (should be removed)
+% ═══════════════════════════════════════════════════════════
 @book{knuth1997,
   author = {Knuth},
   title = {TACP - Duplicate Entry},
   year = {1997}
 }
 
-@article{conference2021,
-  title = {Another duplicate with different key format}
+% ═══════════════════════════════════════════════════════════
+% CONFERENCE PAPER - INCOMPLETE (CrossRef should complete)
+% ═══════════════════════════════════════════════════════════
+@inproceedings{resnet2016,
+  title = {Deep Residual Learning for Image Recognition},
+  author = {He, Kaiming},
+  year = {2016}
+}
+
+% ═══════════════════════════════════════════════════════════
+% INCOMPLETE - Only title (will search by title)
+% ═══════════════════════════════════════════════════════════
+@article{incomplete_title,
+  title = {ImageNet Classification with Deep Convolutional Neural Networks}
+}
+
+% ═══════════════════════════════════════════════════════════
+% MINIMAL - Only author and year (will search by author+year)
+% ═══════════════════════════════════════════════════════════
+@article{minimal_entry,
+  author = {Hinton, Geoffrey},
+  year = {2012},
+  title = {Dropout}
+}
+
+% ═══════════════════════════════════════════════════════════
+% FICTIONAL - Should not be found online
+% ═══════════════════════════════════════════════════════════
+@misc{fictional,
+  title = {This Paper Does Not Exist XYZ123ABC},
+  author = {Fake Author},
+  year = {2099}
 }
