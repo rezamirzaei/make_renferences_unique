@@ -3,11 +3,14 @@
 
 cd "$(dirname "$0")"
 
-# Compile if needed
-if [ ! -d "target/classes" ]; then
-    echo "Compiling..."
-    mkdir -p target/classes target/test-classes
-    javac -d target/classes src/main/java/com/uniquereferences/*.java
+# Always recompile to ensure latest code
+echo "Compiling..."
+mkdir -p target/classes
+javac -d target/classes src/main/java/com/uniquereferences/*.java
+
+if [ $? -ne 0 ]; then
+    echo "Compilation failed!"
+    exit 1
 fi
 
 # Run the application

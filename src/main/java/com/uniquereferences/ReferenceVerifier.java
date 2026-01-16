@@ -32,18 +32,23 @@ public class ReferenceVerifier {
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
     // Month name mappings
-    private static final String[] MONTH_NAMES = {
-        "jan", "feb", "mar", "apr", "may", "jun",
-        "jul", "aug", "sep", "oct", "nov", "dec"
-    };
     private static final String[] MONTH_FULL_NAMES = {
         "January", "February", "March", "April", "May", "June",
         "July", "August", "September", "October", "November", "December"
     };
 
+    private final VerificationMode mode;
+    private final MonthNormalizer.MonthStyle monthStyle;
+
     private final HttpClient httpClient;
 
     public ReferenceVerifier() {
+        this(VerificationMode.SAFE, MonthNormalizer.MonthStyle.KEEP_ORIGINAL);
+    }
+
+    public ReferenceVerifier(VerificationMode mode, MonthNormalizer.MonthStyle monthStyle) {
+        this.mode = mode == null ? VerificationMode.SAFE : mode;
+        this.monthStyle = monthStyle == null ? MonthNormalizer.MonthStyle.KEEP_ORIGINAL : monthStyle;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(TIMEOUT)
                 .followRedirects(HttpClient.Redirect.NORMAL)
@@ -68,6 +73,11 @@ public class ReferenceVerifier {
         SKIPPED             // Skipped (e.g., no searchable info)
     }
 
+    public enum VerificationMode {
+        SAFE,
+        AGGRESSIVE_DOI_ONLY
+    }
+
     /**
      * Verifies and potentially corrects a single BibTeX entry.
      * Queries multiple sources and selects the best result.
@@ -81,8 +91,10 @@ public class ReferenceVerifier {
 
             List<ReferenceData> results = new ArrayList<>();
 
+            boolean doiSearch = doi != null && !doi.isEmpty();
+
             // Strategy 1: Search by DOI (most accurate)
-            if (doi != null && !doi.isEmpty()) {
+            if (doiSearch) {
                 // Try CrossRef
                 ReferenceData crossRefResult = fetchFromCrossRef(doi, null);
                 if (crossRefResult != null) results.add(crossRefResult);
@@ -97,7 +109,7 @@ public class ReferenceVerifier {
             }
 
             // Strategy 2: Search by title if DOI didn't give good results
-            if (results.isEmpty() && title != null && !title.isEmpty() && title.length() > 10) {
+            if (results.isEmpty() && title != null && title.length() > 10) {
                 String cleanTitle = title.replaceAll("[{}]", "").trim();
 
                 ReferenceData crossRefResult = fetchFromCrossRef(null, cleanTitle);
@@ -129,8 +141,10 @@ public class ReferenceVerifier {
             // Select the best result (most complete)
             ReferenceData best = selectBestResult(results);
 
+            boolean allowOverwrites = (mode == VerificationMode.AGGRESSIVE_DOI_ONLY) && doiSearch;
+
             // Build corrected entry
-            return buildResult(bibEntry, best);
+            return buildResult(bibEntry, best, allowOverwrites);
 
         } catch (Exception e) {
             return new VerificationResult(bibEntry, bibEntry, VerificationStatus.ERROR,
@@ -592,7 +606,7 @@ public class ReferenceVerifier {
     /**
      * Builds the verification result from reference data.
      */
-    private VerificationResult buildResult(String bibEntry, ReferenceData data) {
+    private VerificationResult buildResult(String bibEntry, ReferenceData data, boolean allowOverwrites) {
         String entryType = "article";
         String key = "unknown";
 
@@ -607,12 +621,12 @@ public class ReferenceVerifier {
             entryType = mapCrossRefType(data.type);
         }
 
-        String corrected = buildCorrectedEntry(entryType, key, data, bibEntry);
+        String corrected = buildCorrectedEntry(entryType, key, data, bibEntry, allowOverwrites);
         boolean changed = !normalizeForComparison(corrected).equals(normalizeForComparison(bibEntry));
 
         if (changed) {
-            return new VerificationResult(bibEntry, corrected, VerificationStatus.CORRECTED,
-                    "Reference corrected from " + data.source);
+            String msg = allowOverwrites ? "Reference corrected (aggressive) from " : "Reference corrected from ";
+            return new VerificationResult(bibEntry, corrected, VerificationStatus.CORRECTED, msg + data.source);
         } else {
             return new VerificationResult(bibEntry, bibEntry, VerificationStatus.VERIFIED,
                     "Reference verified via " + data.source);
@@ -636,87 +650,94 @@ public class ReferenceVerifier {
 
     /**
      * Builds a corrected BibTeX entry.
-     * IMPORTANT: This method PRESERVES all original fields and only ADDS missing data.
-     * It does NOT overwrite existing correct data to avoid corrupting well-formatted entries.
+     * In SAFE mode: preserves original fields and only adds missing.
+     * In AGGRESSIVE_DOI_ONLY: may overwrite a small set of scalar fields.
      */
-    private String buildCorrectedEntry(String type, String key, ReferenceData data, String original) {
-        // Parse all existing fields from the original entry
+    private String buildCorrectedEntry(String type, String key, ReferenceData data, String original, boolean allowOverwrites) {
         java.util.Map<String, String> fields = parseAllFields(original);
 
-        // Only add fields that are MISSING from the original
-        // Do NOT overwrite existing fields - they might have correct LaTeX formatting
+        java.util.function.BiConsumer<String, String> putMaybe = (k, v) -> {
+            if (v == null || v.isEmpty()) return;
+            String kk = k.toLowerCase();
+            boolean has = fields.containsKey(kk);
+            if (!has) {
+                fields.put(kk, v);
+                return;
+            }
+            if (allowOverwrites && isOverwriteAllowedField(kk)) {
+                fields.put(kk, v);
+            }
+        };
 
-        if (!fields.containsKey("author") && data.authors != null && !data.authors.isEmpty()) {
-            fields.put("author", data.authors);
-        }
+        putMaybe.accept("author", data.authors);
+        putMaybe.accept("title", data.title);
 
-        if (!fields.containsKey("title") && data.title != null && !data.title.isEmpty()) {
-            fields.put("title", data.title);
-        }
-
-        // Journal for articles, booktitle for proceedings
         String containerField = type.equals("inproceedings") || type.equals("incollection") ? "booktitle" : "journal";
         if (!fields.containsKey(containerField) && !fields.containsKey("journal") && !fields.containsKey("booktitle")) {
-            if (data.containerTitle != null && !data.containerTitle.isEmpty()) {
-                fields.put(containerField, data.containerTitle);
+            putMaybe.accept(containerField, data.containerTitle);
+        } else if (allowOverwrites) {
+            // overwrite only the matching container field if present
+            if (fields.containsKey(containerField)) putMaybe.accept(containerField, data.containerTitle);
+        }
+
+        putMaybe.accept("year", data.year);
+
+        // Handle month normalization
+        String existingMonth = fields.get("month");
+        if (existingMonth != null && !existingMonth.isEmpty() && monthStyle != MonthNormalizer.MonthStyle.KEEP_ORIGINAL) {
+            // Normalize existing month to the selected style
+            Integer mNum = MonthNormalizer.parseMonthNumber(existingMonth);
+            if (mNum != null) {
+                String formatted = MonthNormalizer.formatMonth(mNum, monthStyle, existingMonth);
+                fields.put("month", formatted);
+            }
+        } else if (data.month != null && !data.month.isEmpty()) {
+            // Add or update month from API data
+            if (existingMonth == null) {
+                Integer mNum = MonthNormalizer.parseMonthNumber(data.month);
+                String formatted = MonthNormalizer.formatMonth(mNum, monthStyle, data.month);
+                fields.put("month", formatted);
+            } else if (allowOverwrites) {
+                Integer mNum = MonthNormalizer.parseMonthNumber(data.month);
+                String formatted = MonthNormalizer.formatMonth(mNum, monthStyle, data.month);
+                fields.put("month", formatted);
             }
         }
 
-        if (!fields.containsKey("year") && data.year != null && !data.year.isEmpty()) {
-            fields.put("year", data.year);
-        }
+        putMaybe.accept("volume", data.volume);
+        putMaybe.accept("number", data.issue);
+        putMaybe.accept("pages", data.pages);
+        putMaybe.accept("publisher", data.publisher);
+        putMaybe.accept("doi", data.doi);
 
-        if (!fields.containsKey("month") && data.month != null && !data.month.isEmpty()) {
-            fields.put("month", data.month);
+        if (type.equals("book") || type.equals("incollection")) {
+            putMaybe.accept("isbn", data.isbn);
         }
-
-        if (!fields.containsKey("volume") && data.volume != null && !data.volume.isEmpty()) {
-            fields.put("volume", data.volume);
+        if (type.equals("article")) {
+            putMaybe.accept("issn", data.issn);
         }
+        putMaybe.accept("url", data.url);
 
-        if (!fields.containsKey("number") && data.issue != null && !data.issue.isEmpty()) {
-            fields.put("number", data.issue);
-        }
+        return rebuildEntry(type, key, fields);
+    }
 
-        if (!fields.containsKey("pages") && data.pages != null && !data.pages.isEmpty()) {
-            fields.put("pages", data.pages);
-        }
+    private boolean isOverwriteAllowedField(String fieldNameLower) {
+        return switch (fieldNameLower) {
+            case "doi", "url", "year", "month", "volume", "number", "pages", "journal", "booktitle" -> true;
+            default -> false;
+        };
+    }
 
-        if (!fields.containsKey("publisher") && data.publisher != null && !data.publisher.isEmpty()) {
-            fields.put("publisher", data.publisher);
-        }
-
-        // DOI is very valuable - add if missing
-        if (!fields.containsKey("doi") && data.doi != null && !data.doi.isEmpty()) {
-            fields.put("doi", data.doi);
-        }
-
-        // ISBN for books
-        if (!fields.containsKey("isbn") && data.isbn != null && !data.isbn.isEmpty()) {
-            if (type.equals("book") || type.equals("incollection")) {
-                fields.put("isbn", data.isbn);
-            }
-        }
-
-        // ISSN for journals
-        if (!fields.containsKey("issn") && data.issn != null && !data.issn.isEmpty()) {
-            if (type.equals("article")) {
-                fields.put("issn", data.issn);
-            }
-        }
-
-        // Rebuild the entry preserving field order as much as possible
+    private String rebuildEntry(String type, String key, java.util.Map<String, String> fields) {
         StringBuilder sb = new StringBuilder();
         sb.append("@").append(type).append("{").append(key).append(",\n");
 
-        // Output fields in a standard order, but include ALL fields
         String[] standardOrder = {"author", "title", "journal", "booktitle", "year", "month",
-                                   "volume", "number", "pages", "publisher", "organization",
-                                   "doi", "isbn", "issn", "url", "note", "keywords", "abstract"};
+                "volume", "number", "pages", "publisher", "organization",
+                "doi", "isbn", "issn", "url", "note", "keywords", "abstract"};
 
         java.util.Set<String> outputted = new java.util.HashSet<>();
 
-        // First output fields in standard order
         for (String fieldName : standardOrder) {
             if (fields.containsKey(fieldName)) {
                 String value = fields.get(fieldName);
@@ -725,7 +746,6 @@ public class ReferenceVerifier {
             }
         }
 
-        // Then output any remaining fields that weren't in standard order
         for (java.util.Map.Entry<String, String> entry : fields.entrySet()) {
             if (!outputted.contains(entry.getKey())) {
                 sb.append("  ").append(entry.getKey()).append(" = {").append(entry.getValue()).append("},\n");
@@ -738,34 +758,125 @@ public class ReferenceVerifier {
 
     /**
      * Parses all fields from a BibTeX entry, preserving their exact values including LaTeX.
+     *
+     * <p>This is a brace/quote-aware scanner (do NOT use regex for BibTeX fields).
+     * It supports:
+     * <ul>
+     *   <li>field = { ... } with nested braces</li>
+     *   <li>field = "..." with escapes</li>
+     *   <li>field = bareValue</li>
+     * </ul>
      */
     private java.util.Map<String, String> parseAllFields(String bibEntry) {
         java.util.Map<String, String> fields = new java.util.LinkedHashMap<>();
+        if (bibEntry == null || bibEntry.isBlank()) return fields;
 
-        // Pattern to match field = {value} or field = "value" or field = value
-        Pattern fieldPattern = Pattern.compile(
-            "(\\w+)\\s*=\\s*(?:\\{([^{}]*(?:\\{[^{}]*\\}[^{}]*)*)\\}|\"([^\"]*)\"|([\\w]+))",
-            Pattern.CASE_INSENSITIVE
-        );
+        int n = bibEntry.length();
 
-        Matcher m = fieldPattern.matcher(bibEntry);
-        while (m.find()) {
-            String fieldName = m.group(1).toLowerCase();
-            String value = m.group(2); // {braced value}
-            if (value == null) value = m.group(3); // "quoted value"
-            if (value == null) value = m.group(4); // bare value
-            if (value != null) {
-                fields.put(fieldName, value.trim());
+        // Start scanning after the first comma (after @type{key, or @type(key,)
+        int start = bibEntry.indexOf(',');
+        if (start < 0) return fields;
+        int i = start + 1;
+
+        while (i < n) {
+            // skip whitespace and commas
+            while (i < n) {
+                char c = bibEntry.charAt(i);
+                if (Character.isWhitespace(c) || c == ',') i++;
+                else break;
             }
+            if (i >= n) break;
+
+            char c = bibEntry.charAt(i);
+            if (c == '}' || c == ')') break;
+
+            // parse field name
+            int nameStart = i;
+            while (i < n) {
+                char cc = bibEntry.charAt(i);
+                if (Character.isLetterOrDigit(cc) || cc == '_' || cc == '-') i++;
+                else break;
+            }
+            if (i == nameStart) {
+                i++;
+                continue;
+            }
+            String fieldName = bibEntry.substring(nameStart, i).trim().toLowerCase();
+
+            // skip whitespace
+            while (i < n && Character.isWhitespace(bibEntry.charAt(i))) i++;
+            if (i >= n || bibEntry.charAt(i) != '=') {
+                // malformed; continue scanning
+                continue;
+            }
+            i++; // '='
+            while (i < n && Character.isWhitespace(bibEntry.charAt(i))) i++;
+            if (i >= n) break;
+
+            char open = bibEntry.charAt(i);
+            String value;
+
+            if (open == '{') {
+                int depth = 1;
+                int p = i + 1;
+                boolean inQuotes = false;
+                boolean escaped = false;
+                while (p < n && depth > 0) {
+                    char pc = bibEntry.charAt(p);
+                    if (escaped) {
+                        escaped = false;
+                    } else if (pc == '\\') {
+                        escaped = true;
+                    } else if (pc == '"') {
+                        inQuotes = !inQuotes;
+                    } else if (!inQuotes) {
+                        if (pc == '{') depth++;
+                        else if (pc == '}') depth--;
+                    }
+                    p++;
+                }
+                if (depth != 0) {
+                    // unbalanced; stop
+                    break;
+                }
+                value = bibEntry.substring(i + 1, p - 1);
+                i = p;
+            } else if (open == '"') {
+                int p = i + 1;
+                boolean escaped = false;
+                while (p < n) {
+                    char pc = bibEntry.charAt(p);
+                    if (escaped) {
+                        escaped = false;
+                    } else if (pc == '\\') {
+                        escaped = true;
+                    } else if (pc == '"') {
+                        break;
+                    }
+                    p++;
+                }
+                if (p >= n) break;
+                value = bibEntry.substring(i + 1, p);
+                i = p + 1;
+            } else {
+                int p = i;
+                while (p < n) {
+                    char pc = bibEntry.charAt(p);
+                    if (pc == ',' || pc == '}' || pc == ')') break;
+                    p++;
+                }
+                value = bibEntry.substring(i, p);
+                i = p;
+            }
+
+            value = value.trim();
+            // Keep first occurrence to preserve original semantics
+            fields.putIfAbsent(fieldName, value);
         }
 
         return fields;
     }
 
-    private String cleanFieldValue(String value) {
-        if (value == null) return null;
-        return value.replaceAll("[{}]", "").trim();
-    }
 
     private String normalizeForComparison(String s) {
         return s.toLowerCase().replaceAll("\\s+", " ").replaceAll("[{}]", "").trim();
@@ -788,7 +899,7 @@ public class ReferenceVerifier {
     }
 
     private String extractNestedJsonString(String json, String parent, String key) {
-        Pattern p = Pattern.compile("\"" + Pattern.quote(parent) + "\"\\s*:\\s*\\{([^}]+)\\}");
+        Pattern p = Pattern.compile("\\\"" + Pattern.quote(parent) + "\\\"\\s*:\\s*\\{([^}]+)\\}");
         Matcher m = p.matcher(json);
         if (m.find()) {
             return extractJsonString(m.group(1), key);
@@ -822,33 +933,37 @@ public class ReferenceVerifier {
 
     /**
      * Data class to hold reference information from any source.
-     * Package-private so tests in the same package can construct it.
+     * Public so tests can construct it.
      */
-    static class ReferenceData {
-        String source;
-        String title;
-        String doi;
-        String type;
-        String containerTitle;
-        String volume;
-        String issue;
-        String pages;
-        String publisher;
-        String authors;
-        String year;
-        String month;
-        String issn;
-        String isbn;
-        String url;
+    public static class ReferenceData {
+        public String source;
+        public String title;
+        public String doi;
+        public String type;
+        public String containerTitle;
+        public String volume;
+        public String issue;
+        public String pages;
+        public String publisher;
+        public String authors;
+        public String year;
+        public String month;
+        public String issn;
+        public String isbn;
+        public String url;
     }
 
-    // --- Test-only hooks (package-private) ---
+    // --- Test-only hooks (public for external testing) ---
 
-    java.util.Map<String, String> _testOnly_parseAllFields(String bibEntry) {
+    public java.util.Map<String, String> _testOnly_parseAllFields(String bibEntry) {
         return parseAllFields(bibEntry);
     }
 
-    String _testOnly_buildCorrectedEntry(String type, String key, ReferenceData data, String original) {
-        return buildCorrectedEntry(type, key, data, original);
+    public String _testOnly_buildCorrectedEntry(String type, String key, ReferenceData data, String original) {
+        return buildCorrectedEntry(type, key, data, original, false);
+    }
+
+    public String _testOnly_buildCorrectedEntryAggressive(String type, String key, ReferenceData data, String original) {
+        return buildCorrectedEntry(type, key, data, original, true);
     }
 }

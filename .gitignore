@@ -14,19 +14,12 @@
 *.rar
 
 # Maven
-target/
-pom.xml.tag
-pom.xml.releaseBackup
-pom.xml.versionsBackup
-pom.xml.next
-release.properties
+/target/
 
 # IntelliJ IDEA
-.idea/
+/.idea/
 *.iml
-*.iws
-*.ipr
-out/
+/out/
 
 # Eclipse
 .apt_generated
@@ -50,8 +43,6 @@ bin/
 
 # macOS
 .DS_Store
-.AppleDouble
-.LSOverride
 
 # Windows
 Thumbs.db

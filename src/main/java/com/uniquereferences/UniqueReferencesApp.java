@@ -51,6 +51,8 @@ public class UniqueReferencesApp {
     private static final String PREF_SMART_DEDUP = "smartDedup";
     private static final String PREF_RECENT_FILES = "recentFiles";
     private static final String PREF_LAST_DIR = "lastDirectory";
+    private static final String PREF_VERIFICATION_MODE = "verificationMode";
+    private static final String PREF_MONTH_STYLE = "monthStyle";
     private static final int MAX_RECENT_FILES = 5;
 
     private final Preferences prefs = Preferences.userNodeForPackage(UniqueReferencesApp.class);
@@ -70,6 +72,9 @@ public class UniqueReferencesApp {
     private JButton copyButton;
     private JButton saveButton;
     private JButton clearButton;
+
+    private JComboBox<String> verificationModeCombo;
+    private JComboBox<String> monthStyleCombo;
 
     private JMenu recentFilesMenu;
     private final List<Path> recentFiles = new ArrayList<>();
@@ -102,10 +107,13 @@ public class UniqueReferencesApp {
         loadPreferences();
 
         frame = createMainFrame();
-        frame.setJMenuBar(createMenuBar());
 
         JPanel mainPanel = createMainPanel();
         frame.add(mainPanel);
+
+        // Create menu bar after main panel (sortCheckBox must exist first)
+        frame.setJMenuBar(createMenuBar());
+
         frame.setLocationRelativeTo(null); // Center on screen
 
         // Save preferences on close
@@ -201,7 +209,7 @@ public class UniqueReferencesApp {
                     }
 
                     Path path = droppedFiles.get(0).toPath();
-                    if (!isLikelyBibFile(path)) {
+                    if (!isBibFile(path)) {
                         setStatus("Please drop a .bib file.", true);
                         return;
                     }
@@ -286,6 +294,15 @@ public class UniqueReferencesApp {
         smartDedupCheckBox.setToolTipText("Remove duplicates based on similar Title and Author (ignoring keys)");
         smartDedupCheckBox.setSelected(prefs.getBoolean(PREF_SMART_DEDUP, false));
 
+        // Verification settings
+        verificationModeCombo = new JComboBox<>(new String[]{"Safe", "Aggressive (DOI only)"});
+        verificationModeCombo.setToolTipText("Safe: add missing fields only. Aggressive: allow overwriting select fields only when a DOI is present.");
+        verificationModeCombo.setSelectedIndex(prefs.getInt(PREF_VERIFICATION_MODE, 0));
+
+        monthStyleCombo = new JComboBox<>(new String[]{"Keep original", "Abbrev (Sep.)", "Full name (September)"});
+        monthStyleCombo.setToolTipText("How to format month values when inserting or overwriting (depending on mode).");
+        monthStyleCombo.setSelectedIndex(prefs.getInt(PREF_MONTH_STYLE, 0));
+
         // Set reasonable sizes
         Dimension btnSize = new Dimension(110, 30);
         uploadButton.setPreferredSize(btnSize);
@@ -307,6 +324,10 @@ public class UniqueReferencesApp {
         panel.add(uploadButton);
         panel.add(sortCheckBox);
         panel.add(smartDedupCheckBox);
+        panel.add(new JLabel("Mode:"));
+        panel.add(verificationModeCombo);
+        panel.add(new JLabel("Month:"));
+        panel.add(monthStyleCombo);
         panel.add(processButton);
         panel.add(verifyButton);
         panel.add(copyButton);
@@ -401,6 +422,32 @@ public class UniqueReferencesApp {
         processItem.addActionListener(e -> processReferencesAsync());
         actions.add(processItem);
 
+        JMenuItem verifyItem = new JMenuItem("Verify & Correct");
+        verifyItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_R, menuMask));
+        verifyItem.addActionListener(e -> verifyReferencesAsync());
+        actions.add(verifyItem);
+
+        actions.addSeparator();
+
+        JCheckBoxMenuItem sortToggle = new JCheckBoxMenuItem("Sort by Key", sortCheckBox.isSelected());
+        sortToggle.addActionListener(e -> sortCheckBox.setSelected(sortToggle.isSelected()));
+        actions.add(sortToggle);
+
+        JCheckBoxMenuItem smartDedupToggle = new JCheckBoxMenuItem("Smart Dedupe", smartDedupCheckBox.isSelected());
+        smartDedupToggle.setToolTipText("Remove duplicates by normalized Title+Year (in addition to key duplicates)");
+        smartDedupToggle.addActionListener(e -> smartDedupCheckBox.setSelected(smartDedupToggle.isSelected()));
+        actions.add(smartDedupToggle);
+
+        actions.addSeparator();
+
+        JMenuItem exportSummaryItem = new JMenuItem("Export Summary…");
+        exportSummaryItem.addActionListener(e -> exportSummaryToFile());
+        actions.add(exportSummaryItem);
+
+        JMenuItem exportDupesItem = new JMenuItem("Export Duplicates Report…");
+        exportDupesItem.addActionListener(e -> exportDuplicatesReportToFile());
+        actions.add(exportDupesItem);
+
         JMenuItem copyOutputItem = new JMenuItem("Copy Output");
         copyOutputItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_C, menuMask | java.awt.event.InputEvent.SHIFT_DOWN_MASK));
         copyOutputItem.addActionListener(e -> copyToClipboard());
@@ -429,6 +476,118 @@ public class UniqueReferencesApp {
         menuBar.add(help);
 
         return menuBar;
+    }
+
+    /**
+     * Exports a small summary of the current output (counts, duplicates, parse errors) to a text file.
+     */
+    private void exportSummaryToFile() {
+        String inputText = inputArea.getText();
+        if (inputText == null || inputText.isBlank()) {
+            showError("Nothing to summarize. Load or paste a .bib first.");
+            return;
+        }
+
+        BibTeXDeduplicator.Result r = BibTeXDeduplicator.deduplicate(
+                inputText,
+                sortCheckBox.isSelected(),
+                smartDedupCheckBox.isSelected()
+        );
+
+        String summary = """
+                Unique LaTeX References - Summary
+
+                Total entries: %d
+                Unique entries: %d
+                Duplicates removed: %d
+                Parse errors: %d
+                Sort by key: %s
+                Smart dedupe: %s
+                Verification mode: %s
+                Month style: %s
+                """.formatted(
+                r.totalEntries(),
+                r.uniqueCount(),
+                r.duplicateCount(),
+                r.parseErrorCount(),
+                sortCheckBox.isSelected(),
+                smartDedupCheckBox.isSelected(),
+                verificationModeCombo.getSelectedItem(),
+                monthStyleCombo.getSelectedItem()
+        );
+
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Export Summary");
+        chooser.setFileFilter(new FileNameExtensionFilter("Text files (*.txt)", "txt"));
+        chooser.setSelectedFile(new File("references_summary.txt"));
+
+        int res = chooser.showSaveDialog(frame);
+        if (res != JFileChooser.APPROVE_OPTION) return;
+
+        Path path = chooser.getSelectedFile().toPath();
+        if (!path.toString().toLowerCase().endsWith(".txt")) {
+            path = Path.of(path + ".txt");
+        }
+
+        try {
+            Files.writeString(path, summary);
+            setStatus("Summary exported to: " + path.getFileName(), false);
+        } catch (IOException ex) {
+            showError("Error saving summary: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * Exports a report of duplicate records to a text file.
+     */
+    private void exportDuplicatesReportToFile() {
+        String inputText = inputArea.getText();
+        if (inputText == null || inputText.isBlank()) {
+            showError("Nothing to report. Load or paste a .bib first.");
+            return;
+        }
+
+        BibTeXDeduplicator.Result r = BibTeXDeduplicator.deduplicate(
+                inputText,
+                sortCheckBox.isSelected(),
+                smartDedupCheckBox.isSelected()
+        );
+
+        if (r.duplicates().isEmpty()) {
+            showError("No duplicates were detected.");
+            return;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("Unique LaTeX References - Duplicates Report\n\n");
+        sb.append("Total duplicates removed: ").append(r.duplicateCount()).append("\n\n");
+
+        for (BibTeXDeduplicator.DuplicateRecord d : r.duplicates()) {
+            sb.append("- dropped=").append(d.droppedKey())
+                    .append(" kept=").append(d.keptKey())
+                    .append(" reason=").append(d.reason())
+                    .append("\n");
+        }
+
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Export Duplicates Report");
+        chooser.setFileFilter(new FileNameExtensionFilter("Text files (*.txt)", "txt"));
+        chooser.setSelectedFile(new File("duplicates_report.txt"));
+
+        int res = chooser.showSaveDialog(frame);
+        if (res != JFileChooser.APPROVE_OPTION) return;
+
+        Path path = chooser.getSelectedFile().toPath();
+        if (!path.toString().toLowerCase().endsWith(".txt")) {
+            path = Path.of(path + ".txt");
+        }
+
+        try {
+            Files.writeString(path, sb.toString());
+            setStatus("Duplicates report exported to: " + path.getFileName(), false);
+        } catch (IOException ex) {
+            showError("Error saving duplicates report: " + ex.getMessage());
+        }
     }
 
     /**
@@ -511,7 +670,6 @@ public class UniqueReferencesApp {
 
     private SwingWorker<?, ?> currentWorker;
 
-    // ...existing code...
 
     /**
      * Sets the application to busy or idle state, with an optional status message.
@@ -537,6 +695,8 @@ public class UniqueReferencesApp {
         sortCheckBox.setEnabled(!busy);
         smartDedupCheckBox.setEnabled(!busy);
         inputArea.setEditable(!busy);
+        monthStyleCombo.setEnabled(!busy);
+        verificationModeCombo.setEnabled(!busy);
 
         progressBar.setVisible(busy);
 
@@ -563,6 +723,8 @@ public class UniqueReferencesApp {
 
         setBusy(true, "Processing…");
 
+        MonthNormalizer.MonthStyle monthStyle = selectedMonthStyle();
+
         SwingWorker<BibTeXDeduplicator.Result, Void> worker = new SwingWorker<>() {
             @Override
             protected BibTeXDeduplicator.Result doInBackground() {
@@ -582,14 +744,23 @@ public class UniqueReferencesApp {
                         return;
                     }
 
+                    // Apply month normalization if not KEEP_ORIGINAL
+                    java.util.Map<String, String> entries = result.uniqueEntries();
+                    if (monthStyle != MonthNormalizer.MonthStyle.KEEP_ORIGINAL) {
+                        entries = BibTeXDeduplicator.normalizeMonths(entries, monthStyle);
+                    }
+
                     StringBuilder out = new StringBuilder();
                     out.append("% Total entries parsed: ").append(result.totalEntries()).append('\n');
                     out.append("% Unique kept: ").append(result.uniqueCount()).append('\n');
                     out.append("% Duplicates removed: ").append(result.duplicateCount()).append('\n');
                     out.append("% Parse issues: ").append(result.parseErrorCount()).append('\n');
+                    if (monthStyle != MonthNormalizer.MonthStyle.KEEP_ORIGINAL) {
+                        out.append("% Month style: ").append(monthStyle).append('\n');
+                    }
                     out.append("% ").append("=".repeat(50)).append("\n\n");
 
-                    for (String raw : result.uniqueEntries().values()) {
+                    for (String raw : entries.values()) {
                         out.append(raw).append("\n\n");
                     }
 
@@ -672,7 +843,7 @@ public class UniqueReferencesApp {
         SwingWorker<VerificationSummary, VerificationProgress> worker = new SwingWorker<>() {
             @Override
             protected VerificationSummary doInBackground() {
-                ReferenceVerifier verifier = new ReferenceVerifier();
+                ReferenceVerifier verifier = new ReferenceVerifier(selectedVerificationMode(), selectedMonthStyle());
                 java.util.List<String> correctedEntries = new java.util.ArrayList<>();
                 int verified = 0, corrected = 0, notFound = 0, errors = 0, skipped = 0;
                 int current = 0;
@@ -805,7 +976,7 @@ public class UniqueReferencesApp {
      * Loads content from a file path into the input area asynchronously.
      */
     private void loadFromFileAsync(Path path) {
-        if (!isLikelyBibFile(path)) {
+        if (!isBibFile(path)) {
             setStatus("Selected file doesn't look like a .bib file.", true);
             return;
         }
@@ -841,7 +1012,7 @@ public class UniqueReferencesApp {
     /**
      * Checks if the given file path has a .bib extension.
      */
-    private static boolean isLikelyBibFile(Path path) {
+    private static boolean isBibFile(Path path) {
         String name = path.getFileName() == null ? "" : path.getFileName().toString().toLowerCase();
         return name.endsWith(".bib");
     }
@@ -1018,14 +1189,15 @@ public class UniqueReferencesApp {
      * Saves preferences to storage.
      */
     private void savePreferences() {
-        // Save sort preference
         prefs.putBoolean(PREF_SORT_BY_KEY, sortCheckBox.isSelected());
         prefs.putBoolean(PREF_SMART_DEDUP, smartDedupCheckBox.isSelected());
+        prefs.putInt(PREF_VERIFICATION_MODE, verificationModeCombo.getSelectedIndex());
+        prefs.putInt(PREF_MONTH_STYLE, monthStyleCombo.getSelectedIndex());
 
         // Save recent files
         StringBuilder sb = new StringBuilder();
         for (Path path : recentFiles) {
-            if (sb.length() > 0) sb.append("\n");
+            if (!sb.isEmpty()) sb.append("\n");
             sb.append(path.toString());
         }
         prefs.put(PREF_RECENT_FILES, sb.toString());
@@ -1080,5 +1252,19 @@ public class UniqueReferencesApp {
             """, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey);
 
         JOptionPane.showMessageDialog(frame, message, "Keyboard Shortcuts", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private ReferenceVerifier.VerificationMode selectedVerificationMode() {
+        int idx = verificationModeCombo.getSelectedIndex();
+        return idx == 1 ? ReferenceVerifier.VerificationMode.AGGRESSIVE_DOI_ONLY : ReferenceVerifier.VerificationMode.SAFE;
+    }
+
+    private MonthNormalizer.MonthStyle selectedMonthStyle() {
+        int idx = monthStyleCombo.getSelectedIndex();
+        return switch (idx) {
+            case 1 -> MonthNormalizer.MonthStyle.ABBREV_DOT;
+            case 2 -> MonthNormalizer.MonthStyle.FULL_NAME;
+            default -> MonthNormalizer.MonthStyle.KEEP_ORIGINAL;
+        };
     }
 }

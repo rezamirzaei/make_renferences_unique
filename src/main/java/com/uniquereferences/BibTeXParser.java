@@ -161,32 +161,148 @@ public final class BibTeXParser {
 
     /**
      * Extracts a specific field value from a raw BibTeX entry.
-     * Case-insensitive field name matching.
-     * Handles {...} and "..." delimiters.
-     * Returns null if field not found.
+     *
+     * <p>This is a small brace/quote-aware scanner (more reliable than regex for BibTeX).
+     * It supports:
+     * <ul>
+     *   <li>field = { ... } with nested braces</li>
+     *   <li>field = "..." with escaped quotes</li>
+     *   <li>field = bareValue (until comma or end of entry)</li>
+     * </ul>
+     *
+     * <p>Returns the inner value without outer delimiters, preserving LaTeX.
      */
     public static String extractField(String rawEntry, String fieldName) {
         if (rawEntry == null || fieldName == null) return null;
+        String target = fieldName.trim().toLowerCase();
+        if (target.isEmpty()) return null;
 
-        // Regex to find field = {value} or field = "value" or field = 123
-        // Captures: 1=braced, 2=quoted, 3=bare
-        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
-            fieldName + "\\s*=\\s*(?:\\{([^{}]*(?:\\{[^{}]*\\}[^{}]*)*)\\}|\"([^\"]*)\"|([\\w-]+))",
-            java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.DOTALL
-        );
+        int n = rawEntry.length();
+        boolean inQuotes = false;
+        boolean escaped = false;
+        int braceDepth = 0;
 
-        java.util.regex.Matcher m = p.matcher(rawEntry);
-        if (m.find()) {
-            String val = m.group(1); // braced
-            if (val == null) val = m.group(2); // quoted
-            if (val == null) val = m.group(3); // bare
+        for (int i = 0; i < n; i++) {
+            char c = rawEntry.charAt(i);
 
-            if (val != null) {
-                // Remove whitespaces and newlines within the value if needed,
-                // but usually we just trim the result.
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+
+            if (c == '"') {
+                inQuotes = !inQuotes;
+                continue;
+            }
+
+            if (!inQuotes) {
+                if (c == '{') braceDepth++;
+                else if (c == '}') braceDepth = Math.max(0, braceDepth - 1);
+            }
+
+            // We only consider field names at top-level inside the entry body.
+            if (inQuotes || braceDepth > 1) {
+                continue;
+            }
+
+            // Attempt to match field name at this position (word boundary-ish)
+            if (!Character.isLetterOrDigit(c) && c != '_') {
+                continue;
+            }
+
+            int nameStart = i;
+            int nameEnd = i;
+            while (nameEnd < n) {
+                char cc = rawEntry.charAt(nameEnd);
+                if (Character.isLetterOrDigit(cc) || cc == '_' || cc == '-') {
+                    nameEnd++;
+                } else {
+                    break;
+                }
+            }
+
+            if (nameEnd == nameStart) {
+                continue;
+            }
+
+            String name = rawEntry.substring(nameStart, nameEnd).toLowerCase();
+            if (!name.equals(target)) {
+                i = nameEnd; // move forward
+                continue;
+            }
+
+            int j = nameEnd;
+            while (j < n && Character.isWhitespace(rawEntry.charAt(j))) j++;
+            if (j >= n || rawEntry.charAt(j) != '=') {
+                i = nameEnd;
+                continue;
+            }
+            j++; // skip '='
+            while (j < n && Character.isWhitespace(rawEntry.charAt(j))) j++;
+            if (j >= n) return null;
+
+            char open = rawEntry.charAt(j);
+            if (open == '{') {
+                // parse balanced braces
+                int depth = 1;
+                int p = j + 1;
+                boolean q = false;
+                boolean esc = false;
+                while (p < n && depth > 0) {
+                    char pc = rawEntry.charAt(p);
+                    if (esc) {
+                        esc = false;
+                    } else if (pc == '\\') {
+                        esc = true;
+                    } else if (pc == '"') {
+                        q = !q;
+                    } else if (!q) {
+                        if (pc == '{') depth++;
+                        else if (pc == '}') depth--;
+                    }
+                    p++;
+                }
+                if (depth != 0) return null;
+                String val = rawEntry.substring(j + 1, p - 1);
                 return val.replaceAll("\\s+", " ").trim();
             }
+
+            if (open == '"') {
+                int p = j + 1;
+                boolean esc = false;
+                while (p < n) {
+                    char pc = rawEntry.charAt(p);
+                    if (esc) {
+                        esc = false;
+                    } else if (pc == '\\') {
+                        esc = true;
+                    } else if (pc == '"') {
+                        break;
+                    }
+                    p++;
+                }
+                if (p >= n) return null;
+                String val = rawEntry.substring(j + 1, p);
+                return val.replaceAll("\\s+", " ").trim();
+            }
+
+            // bare value until comma or closing brace/paren at same nesting
+            int p = j;
+            while (p < n) {
+                char pc = rawEntry.charAt(p);
+                if (pc == ',' || pc == '}' || pc == ')') {
+                    break;
+                }
+                p++;
+            }
+            String val = rawEntry.substring(j, p);
+            return val.replaceAll("\\s+", " ").trim();
         }
+
         return null;
     }
 }

@@ -1,19 +1,15 @@
 #!/bin/bash
-# Test runner for Unique LaTeX References
+# Test runner for Unique LaTeX References (Maven-based)
+
+set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# Compile source files
-echo "Compiling source files..."
-mkdir -p target/classes target/test-classes
-javac -d target/classes src/main/java/com/uniquereferences/*.java
+if ! command -v mvn >/dev/null 2>&1; then
+  echo "ERROR: Maven (mvn) is required to run tests."
+  echo "Install Maven, then run: ./test.sh"
+  exit 1
+fi
 
-# Compile test files
-echo "Compiling test files..."
-javac -d target/test-classes -cp target/classes src/test/java/com/uniquereferences/*.java
-
-# Run tests
-echo ""
-echo "Running tests..."
-echo ""
-java -cp target/classes:target/test-classes com.uniquereferences.AllTests "$@"
+echo "Running JUnit tests via Maven..."
+mvn test "$@"
