@@ -1,3 +1,5 @@
+package com.uniquereferences;
+
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
@@ -62,9 +64,10 @@ public class UniqueReferencesApp {
 
     private JButton uploadButton;
     private JButton processButton;
+    private JButton verifyButton;
     private JButton copyButton;
-    private JButton clearButton;
     private JButton saveButton;
+    private JButton clearButton;
 
     private JMenu recentFilesMenu;
     private final List<Path> recentFiles = new ArrayList<>();
@@ -494,12 +497,28 @@ public class UniqueReferencesApp {
         }
     }
 
+    private SwingWorker<?, ?> currentWorker;
+
+    // ...existing code...
+
     /**
      * Sets the application to busy or idle state, with an optional status message.
      */
     private void setBusy(boolean busy, String message) {
         uploadButton.setEnabled(!busy);
         processButton.setEnabled(!busy);
+
+        // Allow verify button to act as "Stop" when busy
+        if (busy) {
+            verifyButton.setText("Stop");
+            verifyButton.setEnabled(true);
+            verifyButton.setToolTipText("Stop current operation");
+        } else {
+            verifyButton.setText("Verify & Correct");
+            verifyButton.setEnabled(true);
+            verifyButton.setToolTipText("Verify references online and correct/complete missing fields");
+        }
+
         clearButton.setEnabled(!busy);
         copyButton.setEnabled(!busy);
         saveButton.setEnabled(!busy);
@@ -516,6 +535,13 @@ public class UniqueReferencesApp {
      * Processes the input text and displays unique references asynchronously.
      */
     private void processReferencesAsync() {
+        if (currentWorker != null && !currentWorker.isDone()) {
+            currentWorker.cancel(true);
+            setBusy(false, "Operation cancelled.");
+            currentWorker = null;
+            return;
+        }
+
         String inputText = inputArea.getText();
         if (inputText == null || inputText.isBlank()) {
             setStatus("Please enter or upload BibTeX references first.", true);
@@ -533,6 +559,7 @@ public class UniqueReferencesApp {
             @Override
             protected void done() {
                 try {
+                    if (isCancelled()) return;
                     BibTeXDeduplicator.Result result = get();
 
                     if (result.totalEntries() == 0) {
@@ -561,13 +588,171 @@ public class UniqueReferencesApp {
                 } catch (Exception ex) {
                     setStatus("Processing failed: " + ex.getMessage(), true);
                 } finally {
-                    setBusy(false, null);
+                    if (!isCancelled()) {
+                        setBusy(false, null);
+                    }
+                    currentWorker = null;
                 }
             }
         };
 
+        currentWorker = worker;
         worker.execute();
     }
+
+    /**
+     * Verifies and corrects references using online sources (CrossRef API).
+     */
+    private void verifyReferencesAsync() {
+        if (currentWorker != null && !currentWorker.isDone()) {
+            // Cancel if running
+            currentWorker.cancel(true);
+            setBusy(false, "Operation cancelled.");
+            currentWorker = null;
+            return;
+        }
+
+        String inputText = inputArea.getText();
+        if (inputText == null || inputText.isBlank()) {
+            setStatus("Please enter or upload BibTeX references first.", true);
+            return;
+        }
+
+        // First deduplicate
+        BibTeXDeduplicator.Result dedupResult = BibTeXDeduplicator.deduplicate(inputText, sortCheckBox.isSelected());
+
+        if (dedupResult.totalEntries() == 0) {
+            setStatus("No reference entries found to verify.", true);
+            return;
+        }
+
+        int totalEntries = dedupResult.uniqueCount();
+
+        // Confirm with user since this makes network requests
+        int confirm = JOptionPane.showConfirmDialog(
+                frame,
+                "This will verify " + totalEntries + " unique reference(s) using CrossRef API.\n" +
+                        "This requires an internet connection and may take some time.\n\n" +
+                        "Continue?",
+                "Verify References",
+                JOptionPane.YES_NO_OPTION,
+                JOptionPane.QUESTION_MESSAGE
+        );
+
+        if (confirm != JOptionPane.YES_OPTION) {
+            return;
+        }
+
+        setBusy(true, "Verifying references online (0/" + totalEntries + ")…");
+        progressBar.setIndeterminate(false);
+        progressBar.setMinimum(0);
+        progressBar.setMaximum(totalEntries);
+        progressBar.setValue(0);
+
+        SwingWorker<VerificationSummary, VerificationProgress> worker = new SwingWorker<>() {
+            @Override
+            protected VerificationSummary doInBackground() {
+                ReferenceVerifier verifier = new ReferenceVerifier();
+                java.util.List<String> correctedEntries = new java.util.ArrayList<>();
+                int verified = 0, corrected = 0, notFound = 0, errors = 0, skipped = 0;
+                int current = 0;
+
+                for (String entry : dedupResult.uniqueEntries().values()) {
+                    if (isCancelled()) return null;
+
+                    current++;
+                    publish(new VerificationProgress(current, totalEntries, "Checking: " + extractKeyFromEntry(entry)));
+
+                    ReferenceVerifier.VerificationResult result = verifier.verify(entry);
+
+                    switch (result.status()) {
+                        case VERIFIED -> verified++;
+                        case CORRECTED -> corrected++;
+                        case NOT_FOUND -> notFound++;
+                        case ERROR -> errors++;
+                        case SKIPPED -> skipped++;
+                    }
+
+                    correctedEntries.add(result.correctedEntry());
+
+                    // Small delay to be respectful to the API
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+
+                return new VerificationSummary(correctedEntries, verified, corrected, notFound, errors, skipped);
+            }
+
+            @Override
+            protected void process(java.util.List<VerificationProgress> chunks) {
+                if (isCancelled()) return;
+                VerificationProgress latest = chunks.get(chunks.size() - 1);
+                progressBar.setValue(latest.current);
+                setStatus("Verifying (" + latest.current + "/" + latest.total + "): " + latest.message, false);
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    if (isCancelled()) return;
+
+                    VerificationSummary summary = get();
+                    if (summary == null) return; // Cancelled
+
+                    StringBuilder out = new StringBuilder();
+                    out.append("% Verification Summary:\n");
+                    out.append("% - Verified (correct): ").append(summary.verified).append('\n');
+                    out.append("% - Corrected/completed: ").append(summary.corrected).append('\n');
+                    out.append("% - Not found online: ").append(summary.notFound).append('\n');
+                    out.append("% - Errors: ").append(summary.errors).append('\n');
+                    out.append("% - Skipped (no DOI/title): ").append(summary.skipped).append('\n');
+                    out.append("% ").append("=".repeat(50)).append("\n\n");
+
+                    for (String entry : summary.entries) {
+                        out.append(entry).append("\n\n");
+                    }
+
+                    lastFullOutput = out.toString();
+                    outputArea.setText(lastFullOutput);
+                    outputArea.setCaretPosition(0);
+                    searchField.setText("");
+
+                    String statusMsg = String.format("Done. Verified: %d, Corrected: %d, Not found: %d",
+                            summary.verified, summary.corrected, summary.notFound);
+                    setStatus(statusMsg, false);
+
+                } catch (Exception ex) {
+                    setStatus("Verification failed: " + ex.getMessage(), true);
+                } finally {
+                    if (!isCancelled()) {
+                        progressBar.setIndeterminate(true);
+                        setBusy(false, null);
+                    }
+                    currentWorker = null;
+                }
+            }
+        };
+
+        currentWorker = worker;
+        worker.execute();
+    }
+
+    /**
+     * Extracts the key from a BibTeX entry for display purposes.
+     */
+    private String extractKeyFromEntry(String entry) {
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile("@\\w+\\{([^,]+),");
+        java.util.regex.Matcher m = p.matcher(entry);
+        return m.find() ? m.group(1).trim() : "unknown";
+    }
+
+    // Helper records for verification
+    private record VerificationProgress(int current, int total, String message) {}
+    private record VerificationSummary(java.util.List<String> entries, int verified, int corrected, int notFound, int errors, int skipped) {}
 
     /**
      * Opens a file chooser to upload a .bib file.
@@ -827,17 +1012,21 @@ public class UniqueReferencesApp {
     private void showAboutDialog() {
         String message = """
             Unique LaTeX References
-            Version 1.0
+            Version 2.0
             
-            A tool for deduplicating BibTeX references.
+            A tool for deduplicating and verifying BibTeX references.
             
             Features:
             • Upload or drag-and-drop .bib files
             • Deduplicate entries by key (first occurrence wins)
+            • Verify & correct references using CrossRef API
             • Optional alphabetical sorting by key
             • Search/filter output
             • Save output to file
             • Recent files menu
+            
+            The verification feature uses the CrossRef API to look up
+            references by DOI or title and complete missing fields.
             """;
 
         JOptionPane.showMessageDialog(frame, message, "About", JOptionPane.INFORMATION_MESSAGE);
@@ -855,14 +1044,15 @@ public class UniqueReferencesApp {
             %sO        Open file
             %sS        Save output
             %sEnter    Process references
+            %sR        Verify & correct references online
             %sL        Clear all
-            %sC        Copy (standard) / Copy output (from output area)
+            %sC        Copy (standard)
             %sShift+C  Copy entire output
             %sZ        Undo
             %sShift+Z  Redo
             %sF        Focus search field
             %sQ        Quit
-            """, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey);
+            """, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey, cmdKey);
 
         JOptionPane.showMessageDialog(frame, message, "Keyboard Shortcuts", JOptionPane.INFORMATION_MESSAGE);
     }
