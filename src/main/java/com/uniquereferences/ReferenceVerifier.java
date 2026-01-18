@@ -669,7 +669,10 @@ public class ReferenceVerifier {
             }
         };
 
-        putMaybe.accept("author", data.authors);
+        // Only use API authors if they look valid
+        if (isValidAuthorString(data.authors)) {
+            putMaybe.accept("author", data.authors);
+        }
         putMaybe.accept("title", data.title);
 
         String containerField = type.equals("inproceedings") || type.equals("incollection") ? "booktitle" : "journal";
@@ -714,6 +717,65 @@ public class ReferenceVerifier {
         putMaybe.accept("url", data.url);
 
         return rebuildEntry(type, key, fields);
+    }
+
+    /**
+     * Validates that an author string looks reasonable.
+     * Rejects garbage data that sometimes comes from APIs.
+     */
+    private boolean isValidAuthorString(String authors) {
+        if (authors == null || authors.isBlank()) {
+            return false;
+        }
+
+        // Reject if too long (garbage data often has many repeated words)
+        if (authors.length() > 500) {
+            return false;
+        }
+
+        // Reject if it contains too many "and" separators (indicates garbage)
+        int andCount = 0;
+        int idx = 0;
+        while ((idx = authors.indexOf(" and ", idx)) != -1) {
+            andCount++;
+            idx += 5;
+        }
+        if (andCount > 20) {
+            return false;
+        }
+
+        // Reject if it contains common non-name words that indicate garbage
+        String lower = authors.toLowerCase();
+        String[] garbageIndicators = {
+            "variance", "estimation", "method", "statistical", "probability",
+            "science", "research", "management", "decision", "monitoring",
+            "uncertainty", "function", "accounting", "biology", "optimal",
+            "advanced", "physical", "social", "operations", "process",
+            "(", ")"  // Parentheses in author names indicate parsing issues
+        };
+
+        for (String garbage : garbageIndicators) {
+            if (lower.contains(garbage)) {
+                return false;
+            }
+        }
+
+        // Check that we have at least one plausible name pattern
+        // Names typically have format "LastName, FirstName" or "FirstName LastName"
+        String[] parts = authors.split(" and ");
+        for (String part : parts) {
+            part = part.trim();
+            // Each author part should be relatively short (< 80 chars)
+            if (part.length() > 80) {
+                return false;
+            }
+            // Should contain at least one comma or space (separating first/last name)
+            if (!part.contains(",") && !part.contains(" ")) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private boolean isOverwriteAllowedField(String fieldNameLower) {

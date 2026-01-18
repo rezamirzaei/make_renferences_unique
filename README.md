@@ -4,7 +4,12 @@ A Java Swing application for deduplicating and verifying BibTeX references.
 
 ## Features
 
-- **Upload or Drag & Drop** `.bib` files
+- **Upload or Drag & Drop** `.bib` or `.pdf` files
+- **PDF Reference Extraction**: Extract references from PDF files and convert to BibTeX
+  - Automatically finds the References/Bibliography section
+  - Parses numbered references `[1]`, `[2]`, etc.
+  - Extracts DOIs, years, and titles
+  - Verifies extracted references using online APIs
 - **Deduplicate** entries by key (first occurrence wins)
 - **Smart Dedupe (optional)**: de-duplicate based on normalized **Title** (+ Year when present), even when keys differ
 - **Duplicates report export**: export why each duplicate was dropped (key duplicate vs title duplicate)
@@ -37,8 +42,8 @@ A Java Swing application for deduplicating and verifying BibTeX references.
 
 ## Requirements
 
-- Java 17 or higher
-- Maven (for running tests)
+- Java 21 or higher (Java 25 recommended)
+- Maven (for building and running)
 
 ## Quick Start
 
@@ -86,6 +91,7 @@ java -cp target/classes com.uniquereferences.UniqueReferencesApp
 | Shortcut | Action |
 |----------|--------|
 | ⌘O / Ctrl+O | Open file |
+| ⌘I / Ctrl+I | Import from PDF |
 | ⌘S / Ctrl+S | Save output |
 | ⌘Enter / Ctrl+Enter | Process references |
 | ⌘R / Ctrl+R | Verify & correct online |
@@ -106,6 +112,7 @@ src/
 │   ├── BibTeXParser.java          # BibTeX parsing logic
 │   ├── BibTeXDeduplicator.java    # Deduplication logic
 │   ├── MonthNormalizer.java       # Month formatting utilities
+│   ├── PdfReferenceExtractor.java # PDF reference extraction
 │   └── ReferenceVerifier.java     # Online verification
 └── test/java/com/uniquereferences/
     └── *JUnitTest.java            # JUnit 5 test suite

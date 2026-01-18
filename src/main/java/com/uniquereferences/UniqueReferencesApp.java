@@ -194,7 +194,7 @@ public class UniqueReferencesApp {
         inputArea.setWrapStyleWord(true);
         inputArea.getDocument().addUndoableEditListener((UndoableEditEvent e) -> inputUndo.addEdit(e.getEdit()));
 
-        // Add Drag and Drop support
+        // Add Drag and Drop support for .bib and .pdf files
         inputArea.setDropTarget(new DropTarget() {
             @SuppressWarnings("unchecked")
             public synchronized void drop(DropTargetDropEvent evt) {
@@ -209,12 +209,13 @@ public class UniqueReferencesApp {
                     }
 
                     Path path = droppedFiles.get(0).toPath();
-                    if (!isBibFile(path)) {
-                        setStatus("Please drop a .bib file.", true);
-                        return;
+                    if (isPdfFile(path)) {
+                        extractReferencesFromPdfAsync(path);
+                    } else if (isBibFile(path)) {
+                        loadFromFileAsync(path);
+                    } else {
+                        setStatus("Please drop a .bib or .pdf file.", true);
                     }
-
-                    loadFromFileAsync(path);
                 } catch (Exception ex) {
                     setStatus("Error dropping file: " + ex.getMessage(), true);
                 }
@@ -426,6 +427,14 @@ public class UniqueReferencesApp {
         verifyItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_R, menuMask));
         verifyItem.addActionListener(e -> verifyReferencesAsync());
         actions.add(verifyItem);
+
+        actions.addSeparator();
+
+        JMenuItem importPdfItem = new JMenuItem("Import from PDF…");
+        importPdfItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_I, menuMask));
+        importPdfItem.setToolTipText("Extract references from a PDF file and convert to BibTeX");
+        importPdfItem.addActionListener(e -> importFromPdf());
+        actions.add(importPdfItem);
 
         actions.addSeparator();
 
@@ -950,12 +959,14 @@ public class UniqueReferencesApp {
     private record VerificationSummary(java.util.List<String> entries, int verified, int corrected, int notFound, int errors, int skipped, int duplicatesRemoved) {}
 
     /**
-     * Opens a file chooser to upload a .bib file.
+     * Opens a file chooser to upload a .bib or .pdf file.
      */
     private void uploadFile() {
         JFileChooser fileChooser = new JFileChooser();
-        fileChooser.setDialogTitle("Select a BibTeX (.bib) file");
-        fileChooser.setFileFilter(new FileNameExtensionFilter("BibTeX files (*.bib)", "bib"));
+        fileChooser.setDialogTitle("Select a BibTeX (.bib) or PDF file");
+        fileChooser.setFileFilter(new FileNameExtensionFilter("BibTeX and PDF files (*.bib, *.pdf)", "bib", "pdf"));
+        fileChooser.addChoosableFileFilter(new FileNameExtensionFilter("BibTeX files (*.bib)", "bib"));
+        fileChooser.addChoosableFileFilter(new FileNameExtensionFilter("PDF files (*.pdf)", "pdf"));
 
         // Remember last directory
         String lastDir = prefs.get(PREF_LAST_DIR, null);
@@ -976,8 +987,13 @@ public class UniqueReferencesApp {
      * Loads content from a file path into the input area asynchronously.
      */
     private void loadFromFileAsync(Path path) {
+        if (isPdfFile(path)) {
+            extractReferencesFromPdfAsync(path);
+            return;
+        }
+
         if (!isBibFile(path)) {
-            setStatus("Selected file doesn't look like a .bib file.", true);
+            setStatus("Please select a .bib or .pdf file.", true);
             return;
         }
 
@@ -1010,11 +1026,117 @@ public class UniqueReferencesApp {
     }
 
     /**
+     * Opens a file chooser specifically for PDF import.
+     */
+    private void importFromPdf() {
+        JFileChooser fileChooser = new JFileChooser();
+        fileChooser.setDialogTitle("Select a PDF file to extract references from");
+        fileChooser.setFileFilter(new FileNameExtensionFilter("PDF files (*.pdf)", "pdf"));
+
+        String lastDir = prefs.get(PREF_LAST_DIR, null);
+        if (lastDir != null) {
+            fileChooser.setCurrentDirectory(new File(lastDir));
+        }
+
+        int result = fileChooser.showOpenDialog(frame);
+        if (result == JFileChooser.APPROVE_OPTION) {
+            Path path = fileChooser.getSelectedFile().toPath();
+            prefs.put(PREF_LAST_DIR, path.getParent().toString());
+            extractReferencesFromPdfAsync(path);
+        }
+    }
+
+    /**
+     * Extracts references from a PDF file asynchronously.
+     */
+    private void extractReferencesFromPdfAsync(Path pdfPath) {
+        setBusy(true, "Extracting references from PDF…");
+
+        SwingWorker<PdfReferenceExtractor.ExtractionResult, String> worker = new SwingWorker<>() {
+            @Override
+            protected PdfReferenceExtractor.ExtractionResult doInBackground() throws Exception {
+                publish("Parsing PDF…");
+
+                ReferenceVerifier.VerificationMode mode = verificationModeCombo.getSelectedIndex() == 0
+                        ? ReferenceVerifier.VerificationMode.SAFE
+                        : ReferenceVerifier.VerificationMode.AGGRESSIVE_DOI_ONLY;
+
+                MonthNormalizer.MonthStyle monthStyle = switch (monthStyleCombo.getSelectedIndex()) {
+                    case 1 -> MonthNormalizer.MonthStyle.ABBREV_DOT;
+                    case 2 -> MonthNormalizer.MonthStyle.FULL_NAME;
+                    default -> MonthNormalizer.MonthStyle.KEEP_ORIGINAL;
+                };
+
+                PdfReferenceExtractor extractor = new PdfReferenceExtractor(mode, monthStyle);
+                return extractor.extractFromPdf(pdfPath);
+            }
+
+            @Override
+            protected void process(java.util.List<String> chunks) {
+                if (!chunks.isEmpty()) {
+                    setStatus(chunks.get(chunks.size() - 1), false);
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    PdfReferenceExtractor.ExtractionResult result = get();
+
+                    // Show extraction messages in a dialog
+                    StringBuilder messageBuilder = new StringBuilder();
+                    messageBuilder.append("PDF Reference Extraction Results:\n\n");
+                    for (String msg : result.messages()) {
+                        messageBuilder.append("• ").append(msg).append("\n");
+                    }
+                    messageBuilder.append("\nTotal references found: ").append(result.totalFound());
+                    messageBuilder.append("\nSuccessfully verified: ").append(result.successfullyConverted());
+                    messageBuilder.append("\nVerification errors: ").append(result.verificationErrors());
+
+                    // Put extracted BibTeX in output area
+                    outputArea.setText(result.bibTeXOutput());
+                    outputArea.setCaretPosition(0);
+                    lastFullOutput = result.bibTeXOutput();
+
+                    // Also put in input for further processing
+                    inputArea.setText(result.bibTeXOutput());
+                    inputArea.setCaretPosition(0);
+
+                    setStatus("Extracted " + result.totalFound() + " references from PDF", false);
+
+                    // Show summary dialog
+                    JOptionPane.showMessageDialog(frame,
+                            messageBuilder.toString(),
+                            "PDF Extraction Complete",
+                            result.verificationErrors() > 0 ? JOptionPane.WARNING_MESSAGE : JOptionPane.INFORMATION_MESSAGE);
+
+                } catch (Exception ex) {
+                    Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                    showError("Error extracting references from PDF: " + cause.getMessage());
+                    setStatus("PDF extraction failed.", true);
+                } finally {
+                    setBusy(false, null);
+                }
+            }
+        };
+
+        worker.execute();
+    }
+
+    /**
      * Checks if the given file path has a .bib extension.
      */
     private static boolean isBibFile(Path path) {
         String name = path.getFileName() == null ? "" : path.getFileName().toString().toLowerCase();
         return name.endsWith(".bib");
+    }
+
+    /**
+     * Checks if the given file path has a .pdf extension.
+     */
+    private static boolean isPdfFile(Path path) {
+        String name = path.getFileName() == null ? "" : path.getFileName().toString().toLowerCase();
+        return name.endsWith(".pdf");
     }
 
     /**
