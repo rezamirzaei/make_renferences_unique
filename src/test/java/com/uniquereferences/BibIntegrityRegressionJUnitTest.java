@@ -95,7 +95,7 @@ class BibIntegrityRegressionJUnitTest {
 
         boolean foundLatex = false;
         for (BibTeXParser.Entry e : parsed.entries()) {
-            if (e.raw().contains("\\\\text") || e.raw().contains("\\\\&")) {
+            if (e.raw().contains("\\text") || e.raw().contains("\\&")) {
                 foundLatex = true;
                 Map<String, String> fields = verifier._testOnly_parseAllFields(e.raw());
                 String title = fields.get("title");

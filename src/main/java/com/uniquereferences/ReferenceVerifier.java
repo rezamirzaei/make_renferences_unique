@@ -682,27 +682,22 @@ public class ReferenceVerifier {
 
         putMaybe.accept("year", data.year);
 
-        // Handle month normalization
+        // Handle month: In SAFE mode, preserve existing month. In AGGRESSIVE mode, overwrite with API data.
         String existingMonth = fields.get("month");
-        if (existingMonth != null && !existingMonth.isEmpty() && monthStyle != MonthNormalizer.MonthStyle.KEEP_ORIGINAL) {
-            // Normalize existing month to the selected style
-            Integer mNum = MonthNormalizer.parseMonthNumber(existingMonth);
-            if (mNum != null) {
-                String formatted = MonthNormalizer.formatMonth(mNum, monthStyle, existingMonth);
-                fields.put("month", formatted);
-            }
-        } else if (data.month != null && !data.month.isEmpty()) {
-            // Add or update month from API data
-            if (existingMonth == null) {
-                Integer mNum = MonthNormalizer.parseMonthNumber(data.month);
-                String formatted = MonthNormalizer.formatMonth(mNum, monthStyle, data.month);
-                fields.put("month", formatted);
-            } else if (allowOverwrites) {
+        if (allowOverwrites && data.month != null && !data.month.isEmpty()) {
+            // Aggressive mode: overwrite with API month, then normalize to selected style
+            Integer mNum = MonthNormalizer.parseMonthNumber(data.month);
+            String formatted = MonthNormalizer.formatMonth(mNum, monthStyle, data.month);
+            fields.put("month", formatted);
+        } else if (existingMonth == null || existingMonth.isEmpty()) {
+            // No existing month: add from API data if available
+            if (data.month != null && !data.month.isEmpty()) {
                 Integer mNum = MonthNormalizer.parseMonthNumber(data.month);
                 String formatted = MonthNormalizer.formatMonth(mNum, monthStyle, data.month);
                 fields.put("month", formatted);
             }
         }
+        // Safe mode with existing month: do NOT modify (preserve original)
 
         putMaybe.accept("volume", data.volume);
         putMaybe.accept("number", data.issue);

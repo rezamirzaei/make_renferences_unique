@@ -61,7 +61,7 @@ public final class BibTeXDeduplicator {
                 String title = BibTeXParser.extractField(e.raw(), "title");
                 if (title != null && !title.isBlank()) {
                     String normTitle = normalize(title);
-                    if (normTitle.length() > 10) {
+                    if (normTitle.length() >= 10) {
                         String year = BibTeXParser.extractField(e.raw(), "year");
                         String sigTitleOnly = normTitle;
                         String sigTitleYear = (year != null && !year.isBlank()) ? (normTitle + "|" + year.trim()) : null;
@@ -91,7 +91,7 @@ public final class BibTeXDeduplicator {
                 String title = BibTeXParser.extractField(e.raw(), "title");
                 if (title != null && !title.isBlank()) {
                     String normTitle = normalize(title);
-                    if (normTitle.length() > 10) {
+                    if (normTitle.length() >= 10) {
                         String year = BibTeXParser.extractField(e.raw(), "year");
                         signatureToKeptKey.putIfAbsent(normTitle, droppedKey);
                         if (year != null && !year.isBlank()) {
